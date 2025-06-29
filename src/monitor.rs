@@ -311,6 +311,15 @@ impl<B: SpiBus, CS: OutputPin> PollMethod<LatchingSpiDevice<B, CS>> for SDOLineP
     }
 }
 
+/// Sends the PLADC command and then waits until 0xFF is returned
+pub struct PLADCPolling {}
+
+impl<B: SpiBus, CS: OutputPin> PollMethod<LatchingSpiDevice<B, CS>> for PLADCPolling {
+    fn end_sync_command(&self, bus: &mut LatchingSpiDevice<B, CS>) -> Result<(), crate::spi::Error<B, CS>> {
+        bus.release_cs()
+    }
+}
+
 /// No ADC polling is used
 pub struct NoPolling {}
 
@@ -1010,6 +1019,26 @@ where
     }
 }
 
+impl<S, CS, T, const L: usize> LTC681X<LatchingSpiDevice<S, CS>, PLADCPolling, T, L>
+where
+    S: SpiBus<u8>,
+    CS: OutputPin,
+    T: DeviceTypes,
+{
+    /// Enables PLADC polling
+    ///
+    /// After entering a conversion command, the PLADC command is sent.
+    /// While the ADC performs the a poll command (0xFF) is sent until the ADC return 0xFF to
+    /// indicated that the conversion is completed.
+    pub fn enable_pladc_polling(bus: S, cs: CS) -> LTC681X<LatchingSpiDevice<S, CS>, PLADCPolling, T, L> {
+        LTC681X {
+            bus: LatchingSpiDevice::new(bus, cs),
+            poll_method: PLADCPolling {},
+            device_types: PhantomData,
+        }
+    }
+}
+
 impl<B, CS, T, const L: usize> PollClient for LTC681X<LatchingSpiDevice<B, CS>, SDOLinePolling, T, L>
 where
     B: SpiBus,
@@ -1029,6 +1058,30 @@ where
             return Ok(true);
         }
 
+        Ok(false)
+    }
+}
+
+impl<B, CS, T, const L: usize> PollClient for LTC681X<LatchingSpiDevice<B, CS>, PLADCPolling, T, L>
+where
+    B: SpiBus,
+    CS: OutputPin,
+    T: DeviceTypes,
+{
+    type Error = crate::spi::Error<B, CS>;
+
+    fn adc_ready(&mut self) -> Result<bool, Self::Error> {
+        let mut buffer = [0x0];
+        let pladc_command: u16 = 0b0000_0111_0001_0100;
+        let poll_cmd: &[u8] = &[0xFF];
+
+        self.send_command(pladc_command)?;
+
+        self.bus.transfer(&mut buffer, poll_cmd)?;
+        if buffer[0] == 0xFF {
+            self.bus.release_cs()?;
+            return Ok(true);
+        }
         Ok(false)
     }
 }
